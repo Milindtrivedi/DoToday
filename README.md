@@ -134,7 +134,7 @@ xcodebuild test -project DoToday.xcodeproj -scheme DoToday \
 
 > Substitute any iOS 17+ simulator you have — the name above is just what I ran on. `xcodebuild -project DoToday.xcodeproj -scheme DoToday -showdestinations` lists the ones available to you.
 
-**Current status: 137 unit tests across 20 suites, plus 7 UI tests. All passing, with zero compiler warnings.** Verified from a *fresh `git clone`* — not just an incremental build — on iOS 26.4, and the unit suite additionally on iOS 26.0. Unit tests run in ~0.35 s — no sleeps, no network, no shared state.
+**Current status: 137 unit tests across 20 suites, plus 8 UI tests. All passing, with zero compiler warnings.** Verified from a *fresh `git clone`* — not just an incremental build — on iOS 26.4, and the unit suite additionally on iOS 26.0. Unit tests run in ~0.35 s — no sleeps, no network, no shared state.
 
 ### What is tested, and why
 
@@ -150,7 +150,7 @@ xcodebuild test -project DoToday.xcodeproj -scheme DoToday \
 | **Recent searches** | The domain rules (most-recent-first, de-duplication by city id, the cap, removal, clearing, write-through to storage, and that concurrent selections don't lose entries) tested once against an in-memory store; and separately the `UserDefaults` boundary — full round trip, order, optional fields as `nil` rather than empty strings, corrupt data cleared, and an entry from a future schema skipped while its siblings still load. |
 | **`DefaultForecastRepository`** | Every branch of the cache policy: fresh hit avoids the network, expired hit refetches, revalidate always fetches, offline falls back to stale data, offline with no cache throws, cancellation is not masked by a cache hit, cache keys are scoped per location and window. |
 | **ViewModels** | State transitions for both screens, debounce collapsing a keystroke burst into one request, a superseded search being unable to clobber newer results, `loadIfNeeded` idempotence, and the rule that a failed *refresh* keeps existing content and reports separately. |
-| **UI (XCUITest)** | The primary journey end-to-end: launch → search → select → ranking → expand a day breakdown; plus visiting a city adding it to recents, and clearing recents returning to the empty prompt. All against stubbed data. |
+| **UI (XCUITest)** | The primary journey end-to-end: launch → search → select → ranking → expand a day breakdown; plus visiting a city adding it to recents, opening a city *from* recents (the one action that navigates and reorders the list at the same time), and clearing recents returning to the empty prompt. All against stubbed data. |
 
 ### Testing decisions worth calling out
 
