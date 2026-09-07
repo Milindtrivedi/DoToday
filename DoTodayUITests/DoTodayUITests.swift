@@ -143,7 +143,47 @@ final class DoTodayUITests: XCTestCase {
         )
     }
 
+    func testTappingARecentCityNavigatesAndPromotesIt() {
+        launchApp()
+
+        // The stub returns the same two rows for any query, so the two entries have
+        // to come from tapping different rows rather than searching different terms.
+        // Visit id 1, then id 2, leaving id 2 most recent.
+        visitResult(id: 1)
+        visitResult(id: 2)
+        clearSearchField()
+        XCTAssertTrue(app.buttons["recentCityRow_2"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["recentCityRow_1"].exists)
+
+        // Tapping the *older* entry must navigate — this row is simultaneously being
+        // reordered to the top by the same action, which is the interesting part.
+        app.buttons["recentCityRow_1"].tap()
+        XCTAssertTrue(
+            element("activityRankingList").waitForExistence(timeout: 5),
+            "Tapping a recent city should open its ranking"
+        )
+
+        app.navigationBars.buttons.firstMatch.tap()
+        clearSearchField()
+
+        // Still exactly two entries — promotion must not duplicate.
+        let recents = app.descendants(matching: .any).matching(identifier: "recentCityRow_1")
+        XCTAssertTrue(recents.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(recents.count, 1, "Re-selecting a recent city duplicated it")
+    }
+
     // MARK: - Helpers
+
+    /// Searches, opens the search result with the given city id, and comes back.
+    private func visitResult(id: Int) {
+        clearSearchField()
+        search(for: "Chamonix")
+        let row = app.buttons["cityRow_\(id)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        XCTAssertTrue(element("activityRankingList").waitForExistence(timeout: 5))
+        app.navigationBars.buttons.firstMatch.tap()
+    }
 
     /// Looks an identifier up across every element type.
     ///
