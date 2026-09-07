@@ -113,7 +113,7 @@ Select the **DoToday** scheme and an iOS 26.4 simulator, then run (`⌘R`). Ther
 From the command line:
 
 ```bash
-xcodebuild -project DoToday.xcodeproj -scheme DoToday -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+xcodebuild -project DoToday.xcodeproj -scheme DoToday -destination 'generic/platform=iOS Simulator' build
 ```
 
 ---
@@ -125,12 +125,14 @@ xcodebuild test -project DoToday.xcodeproj -scheme DoToday \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
 ```
 
-Or `⌘U` in Xcode. Unit tests only:
+Or `⌘U` in Xcode. Unit tests only (these are the fast, hermetic ones — the UI tests boot a simulator):
 
 ```bash
 xcodebuild test -project DoToday.xcodeproj -scheme DoToday \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -only-testing:DoTodayTests
 ```
+
+> Substitute any iOS 17+ simulator you have — the name above is just what I ran on. `xcodebuild -project DoToday.xcodeproj -scheme DoToday -showdestinations` lists the ones available to you.
 
 **Current status: 137 unit tests across 20 suites, plus 7 UI tests. All passing, with zero compiler warnings.** Verified from a *fresh `git clone`* — not just an incremental build — on iOS 26.4, and the unit suite additionally on iOS 26.0. Unit tests run in ~0.35 s — no sleeps, no network, no shared state.
 
