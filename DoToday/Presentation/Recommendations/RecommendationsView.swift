@@ -9,6 +9,7 @@ import SwiftUI
 
 /// Ranked activities for one city over the next 7 days.
 struct RecommendationsView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel: RecommendationsViewModel
     /// Which activity's day-by-day breakdown is expanded. Purely visual, so it lives
     /// in the view rather than the ViewModel.
@@ -24,6 +25,13 @@ struct RecommendationsView: View {
             .navigationBarTitleDisplayMode(.large)
             .task {
                 await viewModel.loadIfNeeded()
+            }
+            // Returning to the foreground refreshes a forecast that has gone stale
+            // while the app was away. `.active` also fires on first appearance, which
+            // is harmless: a forecast fetched moments ago is not stale.
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task { await viewModel.refreshIfStale() }
             }
     }
 

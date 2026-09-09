@@ -33,7 +33,13 @@ enum ForecastMapper {
 
         let days: [DailyWeather] = daily.time.enumerated().compactMap { index, dayString in
             // A day we cannot place on the calendar is dropped rather than guessed at.
-            guard let date = formatter.date(from: dayString) else { return nil }
+            //
+            // The round-trip check matters: `DateFormatter` rolls impossible dates
+            // forward rather than failing, so "2026-02-30" would silently parse as
+            // 2 March and be displayed as a real forecast day. Re-formatting the
+            // parsed date and comparing rejects exactly those.
+            guard let date = formatter.date(from: dayString),
+                  formatter.string(from: date) == dayString else { return nil }
 
             return DailyWeather(
                 date: date,

@@ -28,12 +28,23 @@ final class RecommendationsViewModel {
     /// as a dismissible inline banner.
     private(set) var refreshError: AppError?
 
+    /// How old an on-screen forecast may be before returning to the foreground
+    /// refreshes it. Matched to the repository's cache TTL so the two agree about
+    /// what "current" means.
+    static let staleAfter: TimeInterval = DefaultForecastRepository.defaultTimeToLive
+
     private let rankActivities: RankActivitiesUseCase
+    private let dateProvider: DateProvider
     private var loadTask: Task<Void, Never>?
 
-    init(city: City, rankActivities: RankActivitiesUseCase) {
+    init(
+        city: City,
+        rankActivities: RankActivitiesUseCase,
+        dateProvider: DateProvider = SystemDateProvider()
+    ) {
         self.city = city
         self.rankActivities = rankActivities
+        self.dateProvider = dateProvider
     }
 
     /// Initial load. Idempotent: re-entering the screen (or a SwiftUI `.task`
@@ -41,6 +52,20 @@ final class RecommendationsViewModel {
     func loadIfNeeded() async {
         guard case .idle = state else { return }
         await load(cachePolicy: .useCache)
+    }
+
+    /// Called when the app returns to the foreground.
+    ///
+    /// Refreshes only if what is on screen has actually gone stale. Coming back after
+    /// ten seconds should not spend a request, but coming back the next morning should
+    /// not leave yesterday's forecast on screen presented as today's. Nothing is done
+    /// when the screen never loaded or is showing an error — those paths have their
+    /// own affordances and silently mutating them would be surprising.
+    func refreshIfStale() async {
+        guard let loaded = state.value else { return }
+        let age = dateProvider.now.timeIntervalSince(loaded.forecast.retrievedAt)
+        guard age >= Self.staleAfter else { return }
+        await load(cachePolicy: .revalidate)
     }
 
     /// Pull-to-refresh: bypass cache freshness and go to the network.

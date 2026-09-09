@@ -92,6 +92,15 @@ final class CitySearchViewModel {
         savedLists = await savedCities.lists()
     }
 
+    /// Discards the in-memory copy and re-reads from storage.
+    ///
+    /// Distinct from `loadSavedCities()`, which is a cheap idempotent hydrate: this
+    /// one deliberately bypasses the cache because the point is to pick up writes made
+    /// while the app was backgrounded.
+    func reloadSavedCities() async {
+        savedLists = await savedCities.reload()
+    }
+
     /// Records that the user opened this city.
     ///
     /// Synchronous from the view's point of view so navigation is never gated on a

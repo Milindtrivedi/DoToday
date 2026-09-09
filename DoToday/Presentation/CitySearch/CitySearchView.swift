@@ -13,6 +13,7 @@ import SwiftUI
 /// `ViewState` case, which is what keeps the screen impossible to get into an
 /// inconsistent visual state.
 struct CitySearchView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel: CitySearchViewModel
     @State private var path: [City] = []
 
@@ -46,6 +47,13 @@ struct CitySearchView: View {
         }
         .task {
             await viewModel.loadSavedCities()
+        }
+        // Re-read the saved lists on foreground. Today only this process writes them,
+        // but the store is a database rather than in-process state — a share
+        // extension, a widget, or CloudKit sync would all change it behind our back.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await viewModel.reloadSavedCities() }
         }
     }
 

@@ -17,10 +17,13 @@ import SwiftData
 @MainActor
 final class AppContainer {
 
-    // MARK: Domain
+    // MARK: Infrastructure
 
-    // Infrastructure is not retained: it is consumed while building the graph below,
-    // and the use cases hold the only references that outlive `init`.
+    /// Retained because the ViewModel factories below need it after `init`. The rest
+    /// of the infrastructure is consumed while building the graph and not kept.
+    private let dateProvider: DateProvider
+
+    // MARK: Domain
 
     private let searchCitiesUseCase: SearchCitiesUseCase
     private let rankActivitiesUseCase: RankActivitiesUseCase
@@ -35,6 +38,8 @@ final class AppContainer {
         savedCitiesStore: SavedCitiesStore = AppContainer.makeSavedCitiesStore(),
         dateProvider: DateProvider = SystemDateProvider()
     ) {
+        self.dateProvider = dateProvider
+
         let cityRepository = DefaultCityRepository(
             remote: OpenMeteoGeocodingRemoteDataSource(client: httpClient)
         )
@@ -62,7 +67,11 @@ final class AppContainer {
     }
 
     func makeRecommendationsViewModel(for city: City) -> RecommendationsViewModel {
-        RecommendationsViewModel(city: city, rankActivities: rankActivitiesUseCase)
+        RecommendationsViewModel(
+            city: city,
+            rankActivities: rankActivitiesUseCase,
+            dateProvider: dateProvider
+        )
     }
 }
 

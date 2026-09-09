@@ -25,6 +25,9 @@ struct SavedCityLists: Equatable, Sendable {
 
 protocol SavedCitiesUseCase: Sendable {
     func lists() async -> SavedCityLists
+    /// Drops the in-memory copy and re-reads from storage. Used when returning to the
+    /// foreground, where another process may have written since we last looked.
+    func reload() async -> SavedCityLists
     /// Records that the user opened this city's recommendations.
     func recordVisit(to city: City) async -> SavedCityLists
     /// Adds or removes a favourite, leaving recency untouched.
@@ -58,7 +61,7 @@ actor DefaultSavedCitiesUseCase: SavedCitiesUseCase {
     static let recentLimit = 5
 
     /// A pending write, queued during the synchronous phase and flushed afterwards.
-    private enum StoreWrite {
+    private enum StoreWrite: Sendable {
         case upsert(SavedCity)
         case delete(Int)
     }
@@ -68,6 +71,13 @@ actor DefaultSavedCitiesUseCase: SavedCitiesUseCase {
     /// Authoritative in-memory copy, hydrated on first access. `nil` means "not
     /// loaded yet", which is distinct from "loaded and empty".
     private var cache: [SavedCity]?
+    /// Incremented on every commit. `reload()` uses it to detect that a mutation
+    /// landed while it was reading, so a slow read cannot overwrite newer state.
+    private var version: UInt64 = 0
+    /// Tail of the serialised write chain. Each commit links its store writes behind
+    /// the previous commit's, so persistence happens in the same order the in-memory
+    /// state was committed.
+    private var writeChain: Task<Void, Never>?
 
     init(store: SavedCitiesStore, dateProvider: DateProvider = SystemDateProvider()) {
         self.store = store
@@ -76,6 +86,25 @@ actor DefaultSavedCitiesUseCase: SavedCitiesUseCase {
 
     func lists() async -> SavedCityLists {
         project(await hydrated())
+    }
+
+    func reload() async -> SavedCityLists {
+        // Drain our own pending writes first. Reading storage while committed state is
+        // still queued would fetch a snapshot that predates it, and adopting that
+        // would roll the user's change back on screen.
+        await writeChain?.value
+
+        let expected = version
+        let loaded = await store.load()
+
+        // A mutation committed while we were reading. Its in-memory state is newer
+        // than the snapshot we just fetched — and its own store write may not have
+        // landed before our read — so adopting `loaded` here would roll the user's
+        // change back on screen. Found by `concurrentRandomMutationsStayConsistent`.
+        guard version == expected else { return project(cache ?? loaded) }
+
+        cache = loaded
+        return project(loaded)
     }
 
     func recordVisit(to city: City) async -> SavedCityLists {
@@ -194,40 +223,70 @@ actor DefaultSavedCitiesUseCase: SavedCitiesUseCase {
         return result
     }
 
-    /// Commits new state in memory, then flushes the queued writes.
+    /// Commits new state in memory, then persists it in commit order.
     ///
-    /// The `cache` assignment happens *before* any `await`, so no other task can
-    /// observe or overwrite a half-applied mutation. The value returned afterwards is
-    /// read back from `cache` rather than from the local, because a task that ran
-    /// during the flush may have committed on top of ours — and its state already
-    /// includes ours, since it hydrated from the cache we just wrote.
+    /// Two things have to be true here, and only the first is obvious:
+    ///
+    /// 1. `cache` and `version` are assigned *before* any `await`, so no other task
+    ///    can observe a half-applied mutation.
+    /// 2. The store writes must land in the same order the cache was committed.
+    ///    Simply awaiting them here does not achieve that — each `await` is a
+    ///    suspension point, so a later commit's writes can overtake an earlier
+    ///    commit's and leave storage disagreeing with memory. That is a real bug the
+    ///    random concurrent test caught. Chaining each commit's writes behind the
+    ///    previous commit's task fixes it: `writeChain` is assigned synchronously, so
+    ///    the chain order is exactly the commit order.
     private func commit(_ records: [SavedCity], writes: [StoreWrite]) async -> SavedCityLists {
         cache = records
+        version &+= 1
 
-        for write in writes {
-            switch write {
-            case let .upsert(saved): await store.upsert(saved)
-            case let .delete(id): await store.delete(cityID: id)
+        let previous = writeChain
+        let store = self.store
+        let task = Task {
+            // Wait for every earlier commit's writes before applying ours.
+            await previous?.value
+            for write in writes {
+                switch write {
+                case let .upsert(saved): await store.upsert(saved)
+                case let .delete(id): await store.delete(cityID: id)
+                }
             }
         }
+        writeChain = task
+        await task.value
 
         return project(cache ?? records)
     }
 
     /// Derives the two ordered lists the UI renders from the flat record collection.
+    ///
+    /// Both sorts break ties on `city.id`, giving a **total** order rather than one
+    /// that depends on the incoming array order. Two actions can easily share a
+    /// timestamp — the clock has finite resolution — and `sorted(by:)` is not stable,
+    /// so without a tiebreak the same data could project in one order from memory and
+    /// another after a reload. That shows up as rows silently swapping places, and it
+    /// is what the random concurrent test caught.
     private func project(_ records: [SavedCity]) -> SavedCityLists {
         let recent = records
             .filter(\.isRecent)
-            .sorted { ($0.lastVisitedAt ?? .distantPast) > ($1.lastVisitedAt ?? .distantPast) }
+            .sorted { Self.isOrderedBefore($0.lastVisitedAt, $1.lastVisitedAt, $0.id, $1.id) }
             .prefix(Self.recentLimit)
             .map(\.city)
 
         let favourites = records
             .filter(\.isFavourite)
-            .sorted { ($0.favouritedAt ?? .distantPast) > ($1.favouritedAt ?? .distantPast) }
+            .sorted { Self.isOrderedBefore($0.favouritedAt, $1.favouritedAt, $0.id, $1.id) }
             .map(\.city)
 
         return SavedCityLists(recent: Array(recent), favourites: favourites)
+    }
+
+    /// Most recent first; ties broken by ascending id so the order is deterministic.
+    private static func isOrderedBefore(_ lhs: Date?, _ rhs: Date?, _ lhsID: Int, _ rhsID: Int) -> Bool {
+        let left = lhs ?? .distantPast
+        let right = rhs ?? .distantPast
+        if left == right { return lhsID < rhsID }
+        return left > right
     }
 
     private func hydrated() async -> [SavedCity] {

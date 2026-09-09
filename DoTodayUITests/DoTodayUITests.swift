@@ -30,10 +30,17 @@ final class DoTodayUITests: XCTestCase {
     /// from there is a Swift 6 concurrency error. Launching from a `@MainActor`
     /// member of this `@MainActor` class sidesteps that entirely, and keeps the
     /// launch visible in each test rather than hidden in a lifecycle hook.
-    private func launchApp() {
+    /// - Parameter dark: forces the interface style. `nil` uses the simulator's own
+    ///   setting, which is what every test that does not care about appearance wants.
+    private func launchApp(dark: Bool? = nil) {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchArguments = ["-UITestStubbedAPI"]
+        if let dark {
+            // `-AppleInterfaceStyle` is read at launch, so this has to be an argument
+            // rather than something toggled once the app is running.
+            app.launchArguments += ["-AppleInterfaceStyle", dark ? "Dark" : "Light"]
+        }
         app.launch()
     }
 
@@ -246,7 +253,138 @@ final class DoTodayUITests: XCTestCase {
         )
     }
 
+    // MARK: - Foreground / background
+
+    func testStateSurvivesBackgroundingAndReturning() {
+        launchApp()
+        search(for: "Chamonix")
+        XCTAssertTrue(app.buttons["favouriteButton_1"].waitForExistence(timeout: 5))
+        app.buttons["favouriteButton_1"].tap()
+        app.buttons["cityRow_1"].tap()
+        XCTAssertTrue(element("activityRankingList").waitForExistence(timeout: 5))
+
+        backgroundAndReturn()
+
+        // The pushed screen and its content must still be there, not reset to search.
+        XCTAssertTrue(
+            element("activityRankingList").waitForExistence(timeout: 10),
+            "Backgrounding lost the recommendations screen"
+        )
+        XCTAssertTrue(element("activityRow_skiing").exists)
+    }
+
+    func testSavedListsSurviveBackgrounding() {
+        launchApp()
+        search(for: "Chamonix")
+        XCTAssertTrue(app.buttons["favouriteButton_1"].waitForExistence(timeout: 5))
+        app.buttons["favouriteButton_1"].tap()
+        clearSearchField()
+        selectTab("Favourites")
+        XCTAssertTrue(app.buttons["favouritesCityRow_1"].waitForExistence(timeout: 5))
+
+        backgroundAndReturn()
+
+        // Both the data and the selected segment should still be as the user left them.
+        XCTAssertTrue(
+            app.buttons["favouritesCityRow_1"].waitForExistence(timeout: 10),
+            "Favourites were lost or the tab reset on foreground"
+        )
+    }
+
+    func testBackgroundingMidSearchDoesNotLoseTheQuery() {
+        launchApp()
+        search(for: "Chamonix")
+        XCTAssertTrue(app.buttons["cityRow_1"].waitForExistence(timeout: 5))
+
+        backgroundAndReturn()
+
+        XCTAssertTrue(
+            app.buttons["cityRow_1"].waitForExistence(timeout: 10),
+            "Search results were discarded on foreground"
+        )
+    }
+
+    // MARK: - Appearance
+
+    func testRendersInDarkMode() {
+        launchApp(dark: true)
+
+        // The whole primary journey has to work in dark mode, not just the first
+        // screen — colours are the easy part; contrast-dependent controls are not.
+        XCTAssertTrue(element("savedEmptyState_recent").waitForExistence(timeout: 5))
+        selectTab("Favourites")
+        XCTAssertTrue(element("savedEmptyState_favourites").waitForExistence(timeout: 3))
+        selectTab("Recent")
+
+        search(for: "Chamonix")
+        XCTAssertTrue(app.buttons["favouriteButton_1"].waitForExistence(timeout: 5))
+        app.buttons["favouriteButton_1"].tap()
+        app.buttons["cityRow_1"].tap()
+        XCTAssertTrue(element("activityRankingList").waitForExistence(timeout: 5))
+        element("activityRow_skiing").tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any).matching(identifier: "dayScoreRow").firstMatch
+                .waitForExistence(timeout: 3)
+        )
+    }
+
+    func testRendersInLightMode() {
+        launchApp(dark: false)
+
+        XCTAssertTrue(element("savedEmptyState_recent").waitForExistence(timeout: 5))
+        search(for: "Chamonix")
+        XCTAssertTrue(app.buttons["cityRow_1"].waitForExistence(timeout: 5))
+        app.buttons["cityRow_1"].tap()
+        XCTAssertTrue(element("activityRankingList").waitForExistence(timeout: 5))
+    }
+
+    // MARK: - Monkey testing
+
+    func testRapidRandomInteractionDoesNotCrashOrDeadlock() {
+        launchApp()
+
+        // Deterministic sequence, not a true random walk: a UI test that fails
+        // differently every run is worse than no test. The point is to hammer the
+        // transitions — tab switches, stars, navigation, clears — far faster than a
+        // person would, and assert the app is still responsive afterwards.
+        for round in 0..<3 {
+            search(for: round.isMultiple(of: 2) ? "Chamonix" : "Zermatt")
+            if app.buttons["favouriteButton_1"].waitForExistence(timeout: 5) {
+                app.buttons["favouriteButton_1"].tap()
+                app.buttons["favouriteButton_1"].tap()   // toggle straight back off
+                app.buttons["favouriteButton_2"].tap()
+            }
+            app.buttons["cityRow_1"].tap()
+            if element("activityRankingList").waitForExistence(timeout: 5) {
+                element("activityRow_skiing").tap()
+                element("activityRow_skiing").tap()      // expand then collapse
+                app.navigationBars.buttons.firstMatch.tap()
+            }
+            clearSearchField()
+            selectTab("Favourites")
+            selectTab("Recent")
+        }
+
+        // Still alive and interactive, with the saved state intact rather than a
+        // spinner, a blank screen, or a hang.
+        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 10))
+        selectTab("Favourites")
+        XCTAssertTrue(
+            app.buttons["favouritesCityRow_2"].waitForExistence(timeout: 5),
+            "The favourite toggled on during the storm did not survive"
+        )
+    }
+
     // MARK: - Helpers
+
+    /// Sends the app to the background and brings it back.
+    private func backgroundAndReturn() {
+        XCUIDevice.shared.press(.home)
+        // Long enough for the scene to actually reach the background phase; too short
+        // and the test passes without ever exercising what it claims to.
+        Thread.sleep(forTimeInterval: 2)
+        app.activate()
+    }
 
     /// Taps a segment of the saved-cities picker.
     private func selectTab(_ title: String) {
