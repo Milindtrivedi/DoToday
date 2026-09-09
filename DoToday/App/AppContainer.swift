@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import SwiftData
 
 /// Builds and wires the object graph.
 ///
@@ -23,7 +24,7 @@ final class AppContainer {
 
     private let searchCitiesUseCase: SearchCitiesUseCase
     private let rankActivitiesUseCase: RankActivitiesUseCase
-    private let recentCitiesUseCase: RecentCitiesUseCase
+    private let savedCitiesUseCase: SavedCitiesUseCase
 
     /// - Parameters are pre-seeded with production implementations but remain
     ///   injectable, so an integration test or a SwiftUI preview can swap in stubs
@@ -31,7 +32,7 @@ final class AppContainer {
     init(
         httpClient: HTTPClient = URLSessionHTTPClient(session: .doTodayDefault),
         forecastCache: ForecastCache = FileForecastCache(),
-        recentCitiesStore: RecentCitiesStore = UserDefaultsRecentCitiesStore(),
+        savedCitiesStore: SavedCitiesStore = AppContainer.makeSavedCitiesStore(),
         dateProvider: DateProvider = SystemDateProvider()
     ) {
         let cityRepository = DefaultCityRepository(
@@ -48,17 +49,35 @@ final class AppContainer {
             repository: forecastRepository,
             engine: DefaultActivityScoringEngine()
         )
-        self.recentCitiesUseCase = DefaultRecentCitiesUseCase(store: recentCitiesStore)
+        self.savedCitiesUseCase = DefaultSavedCitiesUseCase(
+            store: savedCitiesStore,
+            dateProvider: dateProvider
+        )
     }
 
     // MARK: ViewModel factories
 
     func makeCitySearchViewModel() -> CitySearchViewModel {
-        CitySearchViewModel(searchCities: searchCitiesUseCase, recentCities: recentCitiesUseCase)
+        CitySearchViewModel(searchCities: searchCitiesUseCase, savedCities: savedCitiesUseCase)
     }
 
     func makeRecommendationsViewModel(for city: City) -> RecommendationsViewModel {
         RecommendationsViewModel(city: city, rankActivities: rankActivitiesUseCase)
+    }
+}
+
+extension AppContainer {
+    /// Builds the SwiftData-backed store, falling back to an in-memory one if the
+    /// container cannot be opened (a corrupt store, or a device with no free space).
+    ///
+    /// Recents and favourites are a convenience: losing them across a launch is a
+    /// regression, but refusing to start the app over them would be far worse.
+    static func makeSavedCitiesStore() -> SavedCitiesStore {
+        do {
+            return SwiftDataSavedCitiesStore(modelContainer: try .doToday())
+        } catch {
+            return InMemorySavedCitiesStore()
+        }
     }
 }
 

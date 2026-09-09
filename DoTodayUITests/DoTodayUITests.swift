@@ -40,8 +40,8 @@ final class DoTodayUITests: XCTestCase {
     func testLaunchesIntoTheIdleSearchState() {
         launchApp()
         XCTAssertTrue(
-            element("searchIdleState").waitForExistence(timeout: 5),
-            "The app should open on the empty-search prompt, not a spinner or an error"
+            element("savedEmptyState_recent").waitForExistence(timeout: 5),
+            "The app should open on the Recent tab's empty state, not a spinner or an error"
         )
         XCTAssertTrue(app.searchFields.firstMatch.exists)
     }
@@ -61,7 +61,7 @@ final class DoTodayUITests: XCTestCase {
         search(for: "C")
 
         // One character is below the minimum query length, so nothing is dispatched.
-        XCTAssertTrue(element("searchIdleState").waitForExistence(timeout: 3))
+        XCTAssertTrue(element("savedEmptyState_recent").waitForExistence(timeout: 3))
     }
 
     func testSelectingACityShowsRankedActivities() {
@@ -108,7 +108,7 @@ final class DoTodayUITests: XCTestCase {
     func testVisitingACityAddsItToRecents() {
         launchApp()
         // Fresh launch: no history yet, so the explanatory prompt is showing.
-        XCTAssertTrue(element("searchIdleState").waitForExistence(timeout: 5))
+        XCTAssertTrue(element("savedEmptyState_recent").waitForExistence(timeout: 5))
 
         search(for: "Chamonix")
         XCTAssertTrue(app.buttons["cityRow_1"].waitForExistence(timeout: 5))
@@ -138,8 +138,8 @@ final class DoTodayUITests: XCTestCase {
         element("clearRecentsButton").tap()
 
         XCTAssertTrue(
-            element("searchIdleState").waitForExistence(timeout: 3),
-            "Clearing the last recent should fall back to the explanatory prompt"
+            element("savedEmptyState_recent").waitForExistence(timeout: 3),
+            "Clearing the last recent should fall back to the Recent tab's empty state"
         )
     }
 
@@ -172,7 +172,88 @@ final class DoTodayUITests: XCTestCase {
         XCTAssertEqual(recents.count, 1, "Re-selecting a recent city duplicated it")
     }
 
+    // MARK: - Favourites and the saved-cities segments
+
+    func testFavouritingFromSearchPopulatesTheFavouritesTab() {
+        launchApp()
+        search(for: "Chamonix")
+        XCTAssertTrue(app.buttons["favouriteButton_1"].waitForExistence(timeout: 5))
+
+        app.buttons["favouriteButton_1"].tap()
+        clearSearchField()
+
+        // Favourites tab should now hold it...
+        selectTab("Favourites")
+        XCTAssertTrue(
+            app.buttons["favouritesCityRow_1"].waitForExistence(timeout: 5),
+            "A favourited city should appear under Favourites"
+        )
+
+        // ...while recents stays empty, because starring is not opening.
+        selectTab("Recent")
+        XCTAssertTrue(element("savedEmptyState_recent").waitForExistence(timeout: 3))
+    }
+
+    func testEmptyStatesDifferPerTab() {
+        launchApp()
+
+        // Recent is the default tab on a fresh launch.
+        XCTAssertTrue(element("savedEmptyState_recent").waitForExistence(timeout: 5))
+
+        selectTab("Favourites")
+        XCTAssertTrue(
+            element("savedEmptyState_favourites").waitForExistence(timeout: 3),
+            "The favourites tab needs its own empty state, not the recents one"
+        )
+        XCTAssertFalse(element("savedEmptyState_recent").exists)
+    }
+
+    func testACityCanBeBothRecentAndFavourite() {
+        launchApp()
+        search(for: "Chamonix")
+        XCTAssertTrue(app.buttons["favouriteButton_1"].waitForExistence(timeout: 5))
+        app.buttons["favouriteButton_1"].tap()
+        app.buttons["cityRow_1"].tap()
+        XCTAssertTrue(element("activityRankingList").waitForExistence(timeout: 5))
+        app.navigationBars.buttons.firstMatch.tap()
+        clearSearchField()
+
+        // The same city belongs in both lists at once.
+        XCTAssertTrue(app.buttons["recentCityRow_1"].waitForExistence(timeout: 5))
+        selectTab("Favourites")
+        XCTAssertTrue(app.buttons["favouritesCityRow_1"].waitForExistence(timeout: 3))
+    }
+
+    func testClearingRecentsKeepsFavourites() {
+        launchApp()
+        search(for: "Chamonix")
+        XCTAssertTrue(app.buttons["favouriteButton_1"].waitForExistence(timeout: 5))
+        app.buttons["favouriteButton_1"].tap()
+        app.buttons["cityRow_1"].tap()
+        XCTAssertTrue(element("activityRankingList").waitForExistence(timeout: 5))
+        app.navigationBars.buttons.firstMatch.tap()
+        clearSearchField()
+
+        XCTAssertTrue(element("clearRecentsButton").waitForExistence(timeout: 5))
+        element("clearRecentsButton").tap()
+        XCTAssertTrue(element("savedEmptyState_recent").waitForExistence(timeout: 3))
+
+        // Clearing recents must not take the favourite with it.
+        selectTab("Favourites")
+        XCTAssertTrue(
+            app.buttons["favouritesCityRow_1"].waitForExistence(timeout: 3),
+            "Clearing recents deleted a favourite"
+        )
+    }
+
     // MARK: - Helpers
+
+    /// Taps a segment of the saved-cities picker.
+    private func selectTab(_ title: String) {
+        let segment = app.buttons[title]
+        XCTAssertTrue(segment.waitForExistence(timeout: 5), "Missing '\(title)' segment")
+        segment.tap()
+    }
 
     /// Searches, opens the search result with the given city id, and comes back.
     private func visitResult(id: Int) {

@@ -18,22 +18,36 @@ struct CitySearchViewModelTests {
     /// Zero debounce by default: the delay is a UX concern and is tested on its own,
     /// so every other test can run instantly and deterministically.
     ///
-    /// The recents collaborator is the *real* use case over an in-memory store rather
-    /// than a stub. Its rules are already covered in `RecentCitiesUseCaseTests`, and
-    /// wiring the real one here means these tests also prove the ViewModel is
+    /// The saved-cities collaborator is the *real* use case over an in-memory store
+    /// rather than a stub. Its rules are already covered in `SavedCitiesUseCaseTests`,
+    /// and wiring the real one here means these tests also prove the ViewModel is
     /// connected to it correctly — which a stub would happily hide.
     private func makeSUT(
         result: Result<[City], Error> = .success([Fixture.city()]),
         debounce: Duration = .zero,
-        seededRecents: [City] = []
+        seeded: [SavedCity] = []
     ) -> (CitySearchViewModel, StubSearchCitiesUseCase) {
         let useCase = StubSearchCitiesUseCase(result: result)
-        let recents = DefaultRecentCitiesUseCase(
-            store: InMemoryRecentCitiesStore(cities: seededRecents)
+        let saved = DefaultSavedCitiesUseCase(
+            store: InMemorySavedCitiesStore(seeded: seeded),
+            dateProvider: FixedDateProvider()
         )
         return (
-            CitySearchViewModel(searchCities: useCase, recentCities: recents, debounceInterval: debounce),
+            CitySearchViewModel(searchCities: useCase, savedCities: saved, debounceInterval: debounce),
             useCase
+        )
+    }
+
+    /// Builds a seeded record. `visitedAt`/`favouritedAt` offsets keep ordering
+    /// unambiguous without a real clock.
+    private func saved(
+        id: Int, name: String, visited: TimeInterval? = nil, favourited: TimeInterval? = nil
+    ) -> SavedCity {
+        let base = Date(timeIntervalSince1970: 1_757_203_200)
+        return SavedCity(
+            city: Fixture.city(id: id, name: name),
+            lastVisitedAt: visited.map { base.addingTimeInterval($0) },
+            favouritedAt: favourited.map { base.addingTimeInterval($0) }
         )
     }
 
@@ -171,7 +185,7 @@ struct CitySearchViewModelTests {
         let useCase = StubSearchCitiesUseCase(result: .success([Fixture.city(name: "Stale")]))
         let sut = CitySearchViewModel(
             searchCities: useCase,
-            recentCities: DefaultRecentCitiesUseCase(store: InMemoryRecentCitiesStore()),
+            savedCities: DefaultSavedCitiesUseCase(store: InMemorySavedCitiesStore()),
             debounceInterval: .milliseconds(40)
         )
 
@@ -186,75 +200,113 @@ struct CitySearchViewModelTests {
         #expect(useCase.receivedQueries == ["Fre"])
     }
 
-    // MARK: Recent searches
+    // MARK: Saved cities
 
-    @Test("Recents start empty and hydrate from storage on appear")
-    func recentsHydrateOnAppear() async {
-        let seeded = [Fixture.city(id: 1, name: "London"), Fixture.city(id: 2, name: "Paris")]
-        let (sut, _) = makeSUT(seededRecents: seeded)
-        #expect(sut.recentCities.isEmpty)
+    @Test("Both lists start empty and hydrate from storage on appear")
+    func savedListsHydrateOnAppear() async {
+        let (sut, _) = makeSUT(seeded: [
+            saved(id: 1, name: "London", visited: 0),
+            saved(id: 2, name: "Kyoto", favourited: 0)
+        ])
+        #expect(sut.savedLists == .empty)
 
-        await sut.loadRecentCities()
+        await sut.loadSavedCities()
 
-        #expect(sut.recentCities.map(\.name) == ["London", "Paris"])
+        #expect(sut.savedLists.recent.map(\.name) == ["London"])
+        #expect(sut.savedLists.favourites.map(\.name) == ["Kyoto"])
     }
 
-    @Test("Selecting a city records it at the top of the recents list")
+    @Test("The Recent tab is the default")
+    func recentTabIsDefault() {
+        let (sut, _) = makeSUT()
+
+        // Recents fill themselves; favourites need deliberate action, so the list
+        // that is useful without any setup is the one shown first.
+        #expect(sut.savedTab == .recent)
+    }
+
+    @Test("Selecting a city records it as recent")
     func selectingRecordsRecent() async {
         let (sut, _) = makeSUT()
-        await sut.loadRecentCities()
+        await sut.loadSavedCities()
 
         sut.didSelect(Fixture.city(id: 1, name: "London"))
-        await sut.awaitPendingRecentsUpdate()
-        sut.didSelect(Fixture.city(id: 2, name: "Paris"))
-        await sut.awaitPendingRecentsUpdate()
+        await sut.awaitPendingSavedCitiesUpdate()
 
-        #expect(sut.recentCities.map(\.name) == ["Paris", "London"])
+        #expect(sut.savedLists.recent.map(\.name) == ["London"])
     }
 
-    @Test("Re-selecting a city promotes it without duplicating it")
-    func reselectingPromotesWithoutDuplicating() async {
-        let (sut, _) = makeSUT(seededRecents: [
-            Fixture.city(id: 1, name: "London"),
-            Fixture.city(id: 2, name: "Paris")
+    @Test("Favouriting from search adds a favourite without creating a recent")
+    func favouritingDoesNotCreateARecent() async {
+        let (sut, _) = makeSUT()
+        await sut.loadSavedCities()
+
+        sut.toggleFavourite(Fixture.city(id: 1, name: "Kyoto"))
+        await sut.awaitPendingSavedCitiesUpdate()
+
+        #expect(sut.savedLists.favourites.map(\.name) == ["Kyoto"])
+        // Starring a search result is not the same as opening it.
+        #expect(sut.savedLists.recent.isEmpty)
+    }
+
+    @Test("Toggling twice removes the favourite")
+    func toggleIsReversible() async {
+        let (sut, _) = makeSUT()
+        await sut.loadSavedCities()
+        let city = Fixture.city(id: 1, name: "Kyoto")
+
+        sut.toggleFavourite(city)
+        await sut.awaitPendingSavedCitiesUpdate()
+        sut.toggleFavourite(city)
+        await sut.awaitPendingSavedCitiesUpdate()
+
+        #expect(sut.savedLists.favourites.isEmpty)
+    }
+
+    @Test("isFavourite drives the star and tracks the toggle")
+    func isFavouriteTracksState() async {
+        let (sut, _) = makeSUT()
+        await sut.loadSavedCities()
+        let city = Fixture.city(id: 1, name: "Kyoto")
+        #expect(!sut.isFavourite(city))
+
+        sut.toggleFavourite(city)
+        await sut.awaitPendingSavedCitiesUpdate()
+
+        #expect(sut.isFavourite(city))
+    }
+
+    @Test("Removing a recent keeps the city when it is also favourited")
+    func removingRecentPreservesFavourite() async {
+        let (sut, _) = makeSUT(seeded: [saved(id: 1, name: "Kyoto", visited: 0, favourited: 0)])
+        await sut.loadSavedCities()
+
+        sut.removeRecentCity(Fixture.city(id: 1, name: "Kyoto"))
+        await sut.awaitPendingSavedCitiesUpdate()
+
+        #expect(sut.savedLists.recent.isEmpty)
+        #expect(sut.savedLists.favourites.map(\.name) == ["Kyoto"])
+    }
+
+    @Test("Clearing recents leaves favourites alone")
+    func clearingRecentsPreservesFavourites() async {
+        let (sut, _) = makeSUT(seeded: [
+            saved(id: 1, name: "Kyoto", visited: 0, favourited: 0),
+            saved(id: 2, name: "Oslo", visited: 60)
         ])
-        await sut.loadRecentCities()
-
-        sut.didSelect(Fixture.city(id: 2, name: "Paris"))
-        await sut.awaitPendingRecentsUpdate()
-
-        #expect(sut.recentCities.map(\.name) == ["Paris", "London"])
-    }
-
-    @Test("Removing one recent leaves the others alone")
-    func removingOneRecent() async {
-        let (sut, _) = makeSUT(seededRecents: [
-            Fixture.city(id: 1, name: "London"),
-            Fixture.city(id: 2, name: "Paris")
-        ])
-        await sut.loadRecentCities()
-
-        sut.removeRecentCity(Fixture.city(id: 1, name: "London"))
-        await sut.awaitPendingRecentsUpdate()
-
-        #expect(sut.recentCities.map(\.name) == ["Paris"])
-    }
-
-    @Test("Clearing empties the recents list")
-    func clearingRecents() async {
-        let (sut, _) = makeSUT(seededRecents: [Fixture.city(id: 1), Fixture.city(id: 2)])
-        await sut.loadRecentCities()
+        await sut.loadSavedCities()
 
         sut.clearRecentCities()
-        await sut.awaitPendingRecentsUpdate()
+        await sut.awaitPendingSavedCitiesUpdate()
 
-        #expect(sut.recentCities.isEmpty)
+        #expect(sut.savedLists.recent.isEmpty)
+        #expect(sut.savedLists.favourites.map(\.name) == ["Kyoto"])
     }
 
-    @Test("Recents survive a search and the return to idle")
-    func recentsSurviveASearchCycle() async {
-        let (sut, _) = makeSUT(seededRecents: [Fixture.city(id: 1, name: "London")])
-        await sut.loadRecentCities()
+    @Test("Saved lists survive a search and the return to idle")
+    func savedListsSurviveASearchCycle() async {
+        let (sut, _) = makeSUT(seeded: [saved(id: 1, name: "London", visited: 0)])
+        await sut.loadSavedCities()
 
         sut.query = "Paris"
         sut.queryDidChange()
@@ -265,23 +317,22 @@ struct CitySearchViewModelTests {
         sut.queryDidChange()
         await sut.awaitCurrentSearch()
 
-        // Back at idle, and the list the idle state renders is still intact.
         #expect(sut.state == .idle)
-        #expect(sut.recentCities.map(\.name) == ["London"])
+        #expect(sut.savedLists.recent.map(\.name) == ["London"])
     }
 
-    @Test("Recording a selection does not disturb the search state")
-    func recordingDoesNotAffectSearchState() async {
+    @Test("Favouriting does not disturb the search results on screen")
+    func favouritingDoesNotAffectSearchState() async {
         let cities = [Fixture.city(id: 1, name: "London")]
         let (sut, _) = makeSUT(result: .success(cities))
         sut.query = "London"
         sut.queryDidChange()
         await sut.awaitCurrentSearch()
 
-        sut.didSelect(cities[0])
-        await sut.awaitPendingRecentsUpdate()
+        sut.toggleFavourite(cities[0])
+        await sut.awaitPendingSavedCitiesUpdate()
 
-        // Navigating away must leave the results on screen for the back journey.
+        // The star is an in-place action; it must not collapse the results list.
         #expect(sut.state == .loaded(cities))
     }
 

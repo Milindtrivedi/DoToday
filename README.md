@@ -10,14 +10,14 @@ Built for the Senior / Lead Mobile Engineer exercise. iOS, Swift, SwiftUI.
 
 The app has two screens:
 
-1. **City search** — a debounced search field backed by Open-Meteo's geocoding API, with recently-viewed cities persisted beneath it.
+1. **City search** — a debounced search field backed by Open-Meteo's geocoding API. Each result carries a favourite star, and beneath the field a segmented control switches between **Recent** and **Favourites**, both persisted in SwiftData.
 2. **Recommendations** — the four activities ranked best-first for the selected city, each with a headline score, its best day, and an expandable seven-day breakdown showing the weather behind each daily score.
 
-Supporting behaviour: recent searches (persisted, de-duplicated, swipe-to-delete), offline forecast cache with a stale-data badge, pull-to-refresh, explicit error states with contextual retry, full VoiceOver labelling, and dark mode.
+Supporting behaviour: recents and favourites persisted in SwiftData (de-duplicated, swipe-to-delete, per-tab empty states), offline forecast cache with a stale-data badge, pull-to-refresh, explicit error states with contextual retry, full VoiceOver labelling, and dark mode.
 
-| Search | Ranking | Daily breakdown (dark) |
+| Search + favourites | Ranking | Daily breakdown (dark) |
 |---|---|---|
-| ![Search](Docs/01-search.png) | ![Ranking](Docs/02-ranking.png) | ![Breakdown](Docs/03-breakdown-dark.png) |
+| ![Favourites](Docs/02-favourites.png) | ![Ranking](Docs/02-ranking.png) | ![Breakdown](Docs/03-breakdown-dark.png) |
 
 *Newquay, Cornwall: surfing ranks first, skiing is zeroed by the temperature limiter.*
 
@@ -55,13 +55,14 @@ Clean Architecture with MVVM in the presentation layer. Dependencies point **inw
                                │ depends on protocols
 ┌──────────────────────────────▼─────────────────────────────────────┐
 │                            Domain                                  │
-│  Entities      City, Forecast, DailyWeather, ActivityRanking …     │
+│  Entities      City, Forecast, DailyWeather, ActivityRanking,      │
+│                SavedCity                                           │
 │  Use cases     SearchCitiesUseCase, RankActivitiesUseCase          │
 │  Scoring       ScoringCurve → ScoringCriterion →                   │
 │                ActivityScoringProfile → ActivityScoringEngine      │
-│                RecentCitiesUseCase (ordering, dedupe, cap)         │
+│                SavedCitiesUseCase (recents cap, both orderings)    │
 │  Ports         CityRepository, ForecastRepository,                 │
-│                RecentCitiesStore                    (protocols)    │
+│                SavedCitiesStore                     (protocols)    │
 │  Errors        AppError                                            │
 └──────────────────────────────▲─────────────────────────────────────┘
                                │ implements
@@ -72,7 +73,7 @@ Clean Architecture with MVVM in the presentation layer. Dependencies point **inw
 │  Remote        Open-Meteo data sources + DTOs                      │
 │  Networking    HTTPClient (protocol) → URLSessionHTTPClient        │
 │  Cache         ForecastCache → FileForecastCache / InMemory…       │
-│  Storage       UserDefaultsRecentCitiesStore + RecentCityDTO       │
+│  Storage       SwiftDataSavedCitiesStore + SavedCityRecord         │
 └────────────────────────────────────────────────────────────────────┘
                                ▲
                        AppContainer (composition root)
@@ -96,7 +97,11 @@ Not `isLoading` + `data` + `error`. That triple has eight representable combinat
 
 **Cancellation is control flow, not failure.** `CancellationError` is propagated untouched through every layer — the HTTP client, the repositories, the ViewModels. A cancelled search must not overwrite newer state, and a cancelled forecast must not be silently satisfied from cache.
 
-**Product rules live in the domain, not in the storage implementation.** The recent-search list is split deliberately: `RecentCitiesStore` is a dumb port that loads and saves an array, while `RecentCitiesUseCase` owns *what the list means* — most-recent-first, de-duplicated by city id, capped at five. Putting the ordering and cap in the `UserDefaults` implementation would have been fewer files, but a second backend (SwiftData, CloudKit) would then have to re-implement those rules and get them right again. The use case is an `actor`, because every operation is a read-modify-write and two concurrent selections against a plain struct could drop an entry — there is a test that would catch exactly that.
+**One record per city, not two lists.** Recents and favourites overlap constantly — you favourite the place you just looked at. Storing them as two collections means storing the same city twice and keeping the copies in agreement. Instead there is one `SavedCity` per city carrying two independent timestamps, `lastVisitedAt` and `favouritedAt`; the two lists the UI shows are *projections* of that one collection. Clearing recents cannot then delete a favourite, and a favourite ageing out of the recents cap cannot vanish — both are tested directly.
+
+**Product rules live in the domain, not in the storage implementation.** `SavedCitiesStore` is a dumb CRUD port (`load`/`upsert`/`delete`); `SavedCitiesUseCase` owns *what the lists mean* — the recents cap, both orderings, and when a record is referenced by neither list and should be deleted. Putting that in the SwiftData layer would have been fewer files, but a second backend would then have to re-implement the rules and get them right again.
+
+**Actors are reentrant, and that mattered here.** `SavedCitiesUseCase` is an `actor`, but actor isolation serialises *execution*, not state across `await`. An earlier version computed a new record set, awaited the store write, then assigned the snapshot back to its cache — reinstating a stale value over a newer one. The `concurrentMutationsAreSerialised` test caught it. Every mutation now reads, computes and commits **synchronously** with no `await` in between, persists afterwards, and returns the committed state rather than the local snapshot. The type's doc comment spells out that ordering, because it is the kind of invariant a later edit silently breaks.
 
 **The composition root is the only place that names a concrete type.** `AppContainer` builds the graph; everything else depends on protocols. That single fact is what makes the whole stack substitutable, and it is exercised for real — the UI tests swap in a stubbed `HTTPClient` through the same seam.
 
@@ -134,7 +139,7 @@ xcodebuild test -project DoToday.xcodeproj -scheme DoToday \
 
 > Substitute any iOS 17+ simulator you have — the name above is just what I ran on. `xcodebuild -project DoToday.xcodeproj -scheme DoToday -showdestinations` lists the ones available to you.
 
-**Current status: 137 unit tests across 20 suites, plus 8 UI tests. All passing, with zero compiler warnings.** Verified from a *fresh `git clone`* — not just an incremental build — on iOS 26.4, and the unit suite additionally on iOS 26.0. Unit tests run in ~0.35 s — no sleeps, no network, no shared state.
+**Current status: 137 unit tests across 20 suites, plus 12 UI tests. All passing, with zero compiler warnings.** Verified from a *fresh `git clone`* — not just an incremental build — on iOS 26.4, and the unit suite additionally on iOS 26.0. Unit tests run in ~0.35 s — no sleeps, no network, no shared state.
 
 ### What is tested, and why
 
@@ -147,7 +152,8 @@ xcodebuild test -project DoToday.xcodeproj -scheme DoToday \
 | **`Formatters`** | That day labels are rendered in the *location's* time zone, not the device's (an instant that is the 5th in Los Angeles and the 6th in Tokyo must label differently); percentage clamping; and that a missing temperature shows a dash rather than a fabricated `0°`. |
 | **Mapping** | Real JSON payloads: snake_case keys, absent `results`, `null`s inside daily arrays, **ragged arrays**, unparseable dates, unknown weather codes, and time-zone resolution (a Paris day must not be parsed in the device's zone). |
 | **Networking** | URL construction including percent-encoding and locale-independent coordinate formatting (a comma decimal separator would 400 every request); the full `URLError` → `AppError` translation table. |
-| **Recent searches** | The domain rules (most-recent-first, de-duplication by city id, the cap, removal, clearing, write-through to storage, and that concurrent selections don't lose entries) tested once against an in-memory store; and separately the `UserDefaults` boundary — full round trip, order, optional fields as `nil` rather than empty strings, corrupt data cleared, and an entry from a future schema skipped while its siblings still load. |
+| **Recents & favourites** | The domain rules once against an in-memory store: both orderings, de-duplication, the recents cap, favourites deliberately uncapped, and the overlap cases that matter most — a city being in both lists, clearing recents preserving favourites, swiping a recent away preserving a favourite, a favourite surviving the recents cap, and an orphaned record being deleted rather than left behind. Plus a lost-update test under concurrent mutation, which caught a real reentrancy bug. |
+| **SwiftData boundary** | Separately, against an in-memory `ModelContainer` per test: full round trip with both timestamps, optional fields as `nil`, upsert updating in place rather than duplicating (`cityID` is `@Attribute(.unique)`), upsert clearing a timestamp back to `nil`, delete, and the real store satisfying the same use-case contract the fake does. |
 | **`DefaultForecastRepository`** | Every branch of the cache policy: fresh hit avoids the network, expired hit refetches, revalidate always fetches, offline falls back to stale data, offline with no cache throws, cancellation is not masked by a cache hit, cache keys are scoped per location and window. |
 | **ViewModels** | State transitions for both screens, debounce collapsing a keystroke burst into one request, a superseded search being unable to clobber newer results, `loadIfNeeded` idempotence, and the rule that a failed *refresh* keeps existing content and reports separately. |
 | **UI (XCUITest)** | The primary journey end-to-end: launch → search → select → ranking → expand a day breakdown; plus visiting a city adding it to recents, opening a city *from* recents (the one action that navigates and reorders the list at the same time), and clearing recents returning to the empty prompt. All against stubbed data. |
@@ -303,7 +309,7 @@ What is already production-shaped:
 
 What I would add before shipping:
 
-1. **Recents storage.** `UserDefaults` is right for five small records, but it is a preferences store, not a database. If recents grew into favourites, trip history, or anything synced, this moves to SwiftData behind the existing `RecentCitiesStore` protocol — a one-file change by construction.
+1. **Sync.** Favourites are exactly the kind of data users expect on every device. The SwiftData model is already CloudKit-shaped (no unsupported constraints beyond the unique `cityID`, which would need relaxing), so this is a container-configuration change plus conflict rules, behind the existing `SavedCitiesStore` port.
 2. **Modularisation.** At this size, folders are the right boundary. Past roughly twice this, `Domain` / `Data` / `Presentation` become SwiftPM targets so the dependency rule is enforced by the compiler rather than by review.
 3. **Observability.** `OSLog` categories per layer, plus signposts around the request → map → score pipeline; crash and error reporting with `AppError` cases as dimensions.
 4. **CI.** Build + test on every PR, `xcbeautify` output, a coverage gate, and a lint step (SwiftLint/SwiftFormat).

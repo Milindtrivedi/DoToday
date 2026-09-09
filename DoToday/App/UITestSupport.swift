@@ -75,9 +75,9 @@ extension AppContainer {
         AppContainer(
             httpClient: StubbedHTTPClient(),
             forecastCache: InMemoryForecastCache(),
-            // In-memory recents too, so a UI test never inherits state from a previous
-            // run or from the developer's own use of the app.
-            recentCitiesStore: InMemoryRecentCitiesStore()
+            // In-memory saved cities too, so a UI test never inherits recents or
+            // favourites from a previous run or from the developer's own use.
+            savedCitiesStore: InMemorySavedCitiesStore()
         )
     }
 

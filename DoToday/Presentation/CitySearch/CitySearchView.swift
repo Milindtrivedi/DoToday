@@ -45,7 +45,7 @@ struct CitySearchView: View {
             viewModel.queryDidChange()
         }
         .task {
-            await viewModel.loadRecentCities()
+            await viewModel.loadSavedCities()
         }
     }
 
@@ -53,19 +53,7 @@ struct CitySearchView: View {
     private var content: some View {
         switch viewModel.state {
         case .idle:
-            // The resting state shows recent searches once there are any, and the
-            // explanatory prompt until then.
-            if viewModel.recentCities.isEmpty {
-                ContentUnavailableView {
-                    Label("Where are you going?", systemImage: "magnifyingglass")
-                } description: {
-                    Text("Search for a city to see which activities suit its weather over the next 7 days.")
-                }
-                // Stable identifiers for UI tests; they never change with copy or locale.
-                .accessibilityIdentifier("searchIdleState")
-            } else {
-                recentCitiesList
-            }
+            savedCitiesSection
 
         case .loading:
             ProgressView("Searching…")
@@ -79,55 +67,93 @@ struct CitySearchView: View {
 
         case let .loaded(cities):
             List(cities) { city in
-                Button {
-                    open(city)
-                } label: {
-                    CityRow(city: city)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("cityRow_\(city.id)")
+                CityRow(
+                    city: city,
+                    isFavourite: viewModel.isFavourite(city),
+                    identifier: "cityRow_\(city.id)",
+                    open: { open(city) },
+                    toggleFavourite: { viewModel.toggleFavourite(city) }
+                )
             }
             .listStyle(.plain)
             .accessibilityIdentifier("cityResultsList")
         }
     }
 
-    private var recentCitiesList: some View {
-        List {
-            Section {
-                ForEach(viewModel.recentCities) { city in
-                    Button {
-                        open(city)
-                    } label: {
-                        CityRow(city: city)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("recentCityRow_\(city.id)")
-                    // Swipe-to-delete rather than an edit mode: one entry at a time is
-                    // the only removal anyone actually wants here.
+    /// The resting state: a segmented control over the two saved lists.
+    private var savedCitiesSection: some View {
+        VStack(spacing: 0) {
+            Picker("Saved cities", selection: $viewModel.savedTab) {
+                ForEach(SavedCityTab.allCases) { tab in
+                    Text(tab.title).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.top, 8)
+            .accessibilityIdentifier("savedCitiesPicker")
+
+            savedCitiesList(for: viewModel.savedTab)
+        }
+    }
+
+    @ViewBuilder
+    private func savedCitiesList(for tab: SavedCityTab) -> some View {
+        let cities = tab == .recent ? viewModel.savedLists.recent : viewModel.savedLists.favourites
+
+        if cities.isEmpty {
+            // Each tab gets its own empty state naming the action that would fill it.
+            ContentUnavailableView {
+                Label(tab.emptyTitle, systemImage: tab.emptyImageName)
+            } description: {
+                Text(tab.emptyMessage)
+            }
+            .accessibilityIdentifier("savedEmptyState_\(tab.rawValue)")
+        } else {
+            List {
+                ForEach(cities) { city in
+                    CityRow(
+                        city: city,
+                        isFavourite: viewModel.isFavourite(city),
+                        identifier: "\(tab.rawValue)CityRow_\(city.id)",
+                        open: { open(city) },
+                        toggleFavourite: { viewModel.toggleFavourite(city) }
+                    )
                     .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            viewModel.removeRecentCity(city)
-                        } label: {
-                            Label("Remove", systemImage: "trash")
+                        // Recents are automatic, so removing one is housekeeping.
+                        // Favourites are deliberate, so the destructive action there
+                        // is un-favouriting, not deleting some other list's entry.
+                        if tab == .recent {
+                            Button(role: .destructive) {
+                                viewModel.removeRecentCity(city)
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                        } else {
+                            Button(role: .destructive) {
+                                viewModel.toggleFavourite(city)
+                            } label: {
+                                Label("Unfavourite", systemImage: "star.slash")
+                            }
                         }
                     }
                 }
-            } header: {
-                HStack {
-                    Text("Recent")
-                    Spacer()
-                    Button("Clear") {
-                        viewModel.clearRecentCities()
+            }
+            .listStyle(.plain)
+            .accessibilityIdentifier("\(tab.rawValue)CitiesList")
+            .safeAreaInset(edge: .top) {
+                if tab == .recent {
+                    HStack {
+                        Spacer()
+                        Button("Clear") { viewModel.clearRecentCities() }
+                            .font(.caption.weight(.semibold))
+                            .accessibilityIdentifier("clearRecentsButton")
                     }
-                    .font(.caption.weight(.semibold))
-                    .textCase(nil)
-                    .accessibilityIdentifier("clearRecentsButton")
+                    .padding(.horizontal)
+                    .padding(.vertical, 4)
                 }
             }
         }
-        .listStyle(.plain)
-        .accessibilityIdentifier("recentCitiesList")
     }
 
     /// The single path into the detail screen.
@@ -140,29 +166,70 @@ struct CitySearchView: View {
     }
 }
 
-/// One search result or recent city.
+/// One city row: tap the body to open it, tap the star to favourite it.
+///
+/// The star is a sibling button rather than something nested inside the row button —
+/// a button inside a button gives SwiftUI two overlapping tap targets and the wrong
+/// one usually wins. Keeping them siblings in an `HStack` makes each hit area
+/// unambiguous, and lets VoiceOver expose two distinct actions.
 private struct CityRow: View {
     let city: City
+    let isFavourite: Bool
+    /// Applied to the *open* button, not to the enclosing `HStack`. An identifier on
+    /// a container that is not itself one accessibility element is inherited by every
+    /// descendant, which makes `app.buttons["cityRow_1"]` ambiguous.
+    let identifier: String
+    let open: () -> Void
+    let toggleFavourite: () -> Void
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(city.name)
-                    .font(.body)
-                if !city.subtitle.isEmpty {
-                    Text(city.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            Button(action: open) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(city.name)
+                            .font(.body)
+                        if !city.subtitle.isEmpty {
+                            Text(city.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 0)
                 }
+                .contentShape(.rect)
             }
-            Spacer()
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(identifier)
+            .accessibilityLabel(accessibilityName)
+            .accessibilityHint("Opens activity recommendations")
+
+            Button(action: toggleFavourite) {
+                Image(systemName: isFavourite ? "star.fill" : "star")
+                    .font(.body)
+                    .foregroundStyle(isFavourite ? .yellow : .secondary)
+                    // A larger hit area than the glyph: a 17pt star is well under the
+                    // 44pt minimum touch target on its own.
+                    .frame(width: 44, height: 44)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("favouriteButton_\(city.id)")
+            .accessibilityLabel(isFavourite ? "Remove \(city.name) from favourites" : "Add \(city.name) to favourites")
+            // The star is a toggle, so expose it as one rather than as a plain button
+            // whose meaning flips silently between taps.
+            .accessibilityAddTraits(isFavourite ? [.isButton, .isSelected] : .isButton)
+
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
         }
-        .contentShape(.rect)
-        // Combine into one element so VoiceOver reads "Chamonix, Auvergne-Rhône-Alpes,
-        // France" rather than three separate stops.
-        .accessibilityElement(children: .combine)
+    }
+
+    private var accessibilityName: String {
+        let name = city.subtitle.isEmpty ? city.name : "\(city.name), \(city.subtitle)"
+        return isFavourite ? "\(name). Favourite" : name
     }
 }
