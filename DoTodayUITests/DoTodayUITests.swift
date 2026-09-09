@@ -253,6 +253,59 @@ final class DoTodayUITests: XCTestCase {
         )
     }
 
+    // MARK: - Row hit targets
+
+    func testTappingTheDisclosureArrowOpensTheCityRatherThanFavouritingIt() {
+        launchApp()
+        search(for: "Chamonix")
+        let row = app.buttons["cityRow_1"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+
+        // Tap the far trailing edge of the *screen* at the row's vertical centre —
+        // where the disclosure arrow sits. Deliberately not `row.coordinate(...)`:
+        // that is relative to the row element's own frame, which in the buggy version
+        // stopped short of the arrow, so such a tap would land on the row and pass
+        // even when the arrow itself was broken.
+        tapTrailingEdge(ofRowAt: row.frame.midY)
+
+        XCTAssertTrue(
+            element("activityRankingList").waitForExistence(timeout: 5),
+            "Tapping the disclosure arrow should open the city"
+        )
+    }
+
+    func testTappingTheArrowOnASavedRowAlsoOpensTheCity() {
+        launchApp()
+        visitResult(id: 1)
+        clearSearchField()
+        let row = app.buttons["recentCityRow_1"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+
+        tapTrailingEdge(ofRowAt: row.frame.midY)
+
+        XCTAssertTrue(
+            element("activityRankingList").waitForExistence(timeout: 5),
+            "The same dead-spot bug applied to the dashboard rows"
+        )
+    }
+
+    func testTappingTheStarFavouritesWithoutNavigating() {
+        launchApp()
+        search(for: "Chamonix")
+        XCTAssertTrue(app.buttons["favouriteButton_1"].waitForExistence(timeout: 5))
+
+        app.buttons["favouriteButton_1"].tap()
+
+        // The converse of the bug above: the star must not navigate.
+        XCTAssertFalse(element("activityRankingList").waitForExistence(timeout: 2),
+                       "Tapping the star navigated instead of just favouriting")
+        XCTAssertTrue(app.buttons["cityRow_1"].exists, "The results list should still be on screen")
+
+        clearSearchField()
+        selectTab("Favourites")
+        XCTAssertTrue(app.buttons["favouritesCityRow_1"].waitForExistence(timeout: 5))
+    }
+
     // MARK: - Foreground / background
 
     func testStateSurvivesBackgroundingAndReturning() {
@@ -384,6 +437,14 @@ final class DoTodayUITests: XCTestCase {
         // and the test passes without ever exercising what it claims to.
         Thread.sleep(forTimeInterval: 2)
         app.activate()
+    }
+
+    /// Taps the far trailing edge of the window at a given vertical position, which
+    /// is where a row's disclosure arrow sits.
+    private func tapTrailingEdge(ofRowAt y: CGFloat) {
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: app.frame.width - 12, dy: y))
+            .tap()
     }
 
     /// Taps a segment of the saved-cities picker.

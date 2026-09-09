@@ -45,6 +45,14 @@ struct CitySearchView: View {
         .onChange(of: viewModel.query) {
             viewModel.queryDidChange()
         }
+        // Recording a visit is driven by the navigation path rather than by each row's
+        // tap handler. The rows are `NavigationLink`s now, so there is no single place
+        // a tap passes through — and this way any future route into the detail screen
+        // updates recents automatically instead of having to remember to.
+        .onChange(of: path) { previous, current in
+            guard current.count > previous.count, let city = current.last else { return }
+            viewModel.didSelect(city)
+        }
         .task {
             await viewModel.loadSavedCities()
         }
@@ -79,7 +87,6 @@ struct CitySearchView: View {
                     city: city,
                     isFavourite: viewModel.isFavourite(city),
                     identifier: "cityRow_\(city.id)",
-                    open: { open(city) },
                     toggleFavourite: { viewModel.toggleFavourite(city) }
                 )
             }
@@ -119,12 +126,12 @@ struct CitySearchView: View {
             .accessibilityIdentifier("savedEmptyState_\(tab.rawValue)")
         } else {
             List {
-                ForEach(cities) { city in
+                Section {
+                    ForEach(cities) { city in
                     CityRow(
                         city: city,
                         isFavourite: viewModel.isFavourite(city),
                         identifier: "\(tab.rawValue)CityRow_\(city.id)",
-                        open: { open(city) },
                         toggleFavourite: { viewModel.toggleFavourite(city) }
                     )
                     .swipeActions(edge: .trailing) {
@@ -145,33 +152,38 @@ struct CitySearchView: View {
                             }
                         }
                     }
+                    }
+                }
+
+                // Clearing lives at the foot of the list it acts on, as a full-width
+                // destructive row — the same shape Safari uses for clearing history.
+                // Previously this was a small "Clear" floating above the list in a
+                // safe-area inset, which had no padding of its own, belonged to
+                // nothing visually, and read as a stray label rather than an action.
+                if tab == .recent {
+                    Section {
+                        Button(role: .destructive) {
+                            viewModel.clearRecentCities()
+                        } label: {
+                            Text("Clear Recent Searches")
+                                .font(.body)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .contentShape(.rect)
+                        }
+                        .accessibilityIdentifier("clearRecentsButton")
+                        // The row's separators inherit the list's leading inset from
+                        // the rows above, which leaves them starting under the star
+                        // column and looking like a mistake. This row is a footer
+                        // action, not another city, so it gets none.
+                        .listRowSeparator(.hidden)
+                    }
                 }
             }
             .listStyle(.plain)
             .accessibilityIdentifier("\(tab.rawValue)CitiesList")
-            .safeAreaInset(edge: .top) {
-                if tab == .recent {
-                    HStack {
-                        Spacer()
-                        Button("Clear") { viewModel.clearRecentCities() }
-                            .font(.caption.weight(.semibold))
-                            .accessibilityIdentifier("clearRecentsButton")
-                    }
-                    .padding(.horizontal)
-                    .padding(.vertical, 4)
-                }
-            }
         }
     }
 
-    /// The single path into the detail screen.
-    ///
-    /// Navigation and recording go together by construction, so a future entry point
-    /// cannot navigate without also updating the recents list.
-    private func open(_ city: City) {
-        viewModel.didSelect(city)
-        path.append(city)
-    }
 }
 
 /// One city row: tap the body to open it, tap the star to favourite it.
@@ -180,59 +192,63 @@ struct CitySearchView: View {
 /// a button inside a button gives SwiftUI two overlapping tap targets and the wrong
 /// one usually wins. Keeping them siblings in an `HStack` makes each hit area
 /// unambiguous, and lets VoiceOver expose two distinct actions.
+/// One city row: a `NavigationLink` for the whole row, with the favourite star as a
+/// *sibling* button beside it.
+///
+/// This shape is deliberate. The first version drew the disclosure chevron as a bare
+/// `Image` sitting after the star, which meant it belonged to no control at all —
+/// tapping the arrow landed in dead space and SwiftUI routed it to the nearest
+/// interactive view, the star. So the arrow toggled the favourite instead of opening
+/// the city, which is the opposite of what it looks like it does.
+///
+/// `NavigationLink` supplies its own chevron and owns the hit area up to it, so the
+/// arrow navigates by construction rather than by hoping the geometry lines up. The
+/// star sits at the leading edge, outside the link, with `.borderless` so it takes
+/// only its own taps — inside the link's label it would be swallowed by the link.
 private struct CityRow: View {
     let city: City
     let isFavourite: Bool
-    /// Applied to the *open* button, not to the enclosing `HStack`. An identifier on
-    /// a container that is not itself one accessibility element is inherited by every
+    /// Applied to the link, not to the enclosing `HStack`. An identifier on a
+    /// container that is not itself one accessibility element is inherited by every
     /// descendant, which makes `app.buttons["cityRow_1"]` ambiguous.
     let identifier: String
-    let open: () -> Void
     let toggleFavourite: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            Button(action: open) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(city.name)
-                            .font(.body)
-                        if !city.subtitle.isEmpty {
-                            Text(city.subtitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier(identifier)
-            .accessibilityLabel(accessibilityName)
-            .accessibilityHint("Opens activity recommendations")
-
+        HStack(spacing: 4) {
             Button(action: toggleFavourite) {
                 Image(systemName: isFavourite ? "star.fill" : "star")
                     .font(.body)
                     .foregroundStyle(isFavourite ? .yellow : .secondary)
-                    // A larger hit area than the glyph: a 17pt star is well under the
-                    // 44pt minimum touch target on its own.
+                    // A 17pt glyph is well under the 44pt minimum touch target.
                     .frame(width: 44, height: 44)
                     .contentShape(.rect)
             }
-            .buttonStyle(.plain)
+            // `.borderless` rather than `.plain`: inside a List row, a plain-styled
+            // button lets the row's own tap handling win.
+            .buttonStyle(.borderless)
             .accessibilityIdentifier("favouriteButton_\(city.id)")
             .accessibilityLabel(isFavourite ? "Remove \(city.name) from favourites" : "Add \(city.name) to favourites")
             // The star is a toggle, so expose it as one rather than as a plain button
             // whose meaning flips silently between taps.
             .accessibilityAddTraits(isFavourite ? [.isButton, .isSelected] : .isButton)
 
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .accessibilityHidden(true)
+            NavigationLink(value: city) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(city.name)
+                        .font(.body)
+                    if !city.subtitle.isEmpty {
+                        Text(city.subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(accessibilityName)
+                .accessibilityHint("Opens activity recommendations")
+            }
+            .accessibilityIdentifier(identifier)
         }
     }
 
