@@ -60,7 +60,22 @@ extension ModelContainer {
     /// - Parameter inMemory: used by tests and UI-test runs so they never read or
     ///   write the developer's real database.
     static func doToday(inMemory: Bool = false) throws -> ModelContainer {
-        try ModelContainer(
+        if !inMemory {
+            // SwiftData puts its store in Application Support but does not create that
+            // directory. On a fresh install it therefore fails, logs around a hundred
+            // lines of CoreData errors, and only then recovers. The store ends up
+            // working either way, but a first launch should not look like a crash in
+            // the console — so create the directory before handing over.
+            if let applicationSupport = FileManager.default
+                .urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+                try? FileManager.default.createDirectory(
+                    at: applicationSupport,
+                    withIntermediateDirectories: true
+                )
+            }
+        }
+
+        return try ModelContainer(
             for: SavedCityRecord.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: inMemory)
         )
