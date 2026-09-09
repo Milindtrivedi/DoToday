@@ -139,7 +139,7 @@ xcodebuild test -project DoToday.xcodeproj -scheme DoToday \
 
 > Substitute any iOS 17+ simulator you have — the name above is just what I ran on. `xcodebuild -project DoToday.xcodeproj -scheme DoToday -showdestinations` lists the ones available to you.
 
-**Current status: 137 unit tests across 20 suites, plus 12 UI tests. All passing, with zero compiler warnings.** Verified from a *fresh `git clone`* — not just an incremental build — on iOS 26.4, and the unit suite additionally on iOS 26.0. Unit tests run in ~0.35 s — no sleeps, no network, no shared state.
+**Current status: 148 unit tests across 19 suites, plus 12 UI tests. All passing, with zero compiler warnings.** Verified from a *fresh `git clone`* — not just an incremental build — on iOS 26.4, and the unit suite additionally on iOS 26.0. Unit tests run in ~0.35 s — no sleeps, no network, no shared state.
 
 ### What is tested, and why
 
